@@ -68,8 +68,14 @@ def _warp_frame(img_np, dep_np, focal_length,
     else:
         depth_metric = dep_np + 1e-6
 
-    # mean=1로 정규화 → t_x, t_y 단위가 "평균 거리" 기준으로 직관적
-    depth_metric = depth_metric / (depth_metric.mean() + 1e-6)
+    # percentile 기반 clamp: 극단값 제거 후 정규화
+    # 가까운 물체의 depth_metric이 너무 작으면 translation 시 화면 밖으로 날아감
+    p_low  = np.percentile(depth_metric, 5)
+    p_high = np.percentile(depth_metric, 95)
+    depth_metric = np.clip(depth_metric, p_low, p_high)
+
+    # median=1로 정규화 (mean보다 outlier에 강건)
+    depth_metric = depth_metric / (np.median(depth_metric) + 1e-6)
 
     # ── Pixel → 3D ─────────────────────────────────────────────
     u_grid, v_grid = np.meshgrid(np.arange(W, dtype=np.float32),
