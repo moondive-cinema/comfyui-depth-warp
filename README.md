@@ -1,104 +1,112 @@
-# Depth Warp 6-DOF — ComfyUI Custom Node
-**Magic Hour Inc. — Virtual Studio Background Pipeline**
+# ComfyUI Depth Warp 6-DOF
 
-Depth Anything V2 깊이 맵을 이용한 6-DOF 시점 변환 노드.  
-Translation 파라미터로 패럴랙스를 발생시켜 다중 카메라 화각 배경을 생성한다.
+A ComfyUI custom node for depth-based geometric view synthesis.  
+Uses a depth map (e.g. from Depth Anything V2) to warp a background image to a new camera position, producing realistic parallax for multi-camera virtual studio setups.
 
 ---
 
-## 설치
+## How It Works
 
-```bash
-# ComfyUI/custom_nodes/ 에 복사
-cp -r comfyui-depth-warp/ ~/ComfyUI/custom_nodes/
-# ComfyUI 재시작
+Standard PTZ rotation only pans/tilts the image — no parallax. This node supports full **6-DOF camera transforms** (rotation + translation), so nearby objects shift more than distant ones, just like a real camera position change.
+
+```
+Translation ON  → parallax (near objects move more)
+Rotation only   → no parallax (flat pan/tilt)
 ```
 
----
-
-## 노드 위치
-
-`MagicHour/Background` → **Depth Warp 6-DOF (MagicHour)**
+Occluded regions revealed by the warp are output as a **hole mask**, ready to be inpainted with FLUX Fill or any other inpainting model.
 
 ---
 
-## 파라미터
+## Installation
 
-### 카메라 내부 파라미터
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `focal_length` | 1000 | 초점거리(px). 화각이 좁을수록 크게. 35mm 환산 50mm ≈ 1000~1500 |
+```bash
+cd ComfyUI/custom_nodes/
+git clone https://github.com/moondive-cinema/comfyui-depth-warp.git
+# Restart ComfyUI
+```
 
-### Translation (패럴랙스 발생)
-| 파라미터 | 단위 | 설명 |
-|---------|------|------|
-| `t_x` | 상대값 | 좌우 이동. 양수=오른쪽. **스튜디오 다중 화각의 핵심 파라미터** |
-| `t_y` | 상대값 | 상하 이동. 양수=아래쪽 |
-| `t_z` | 상대값 | 전후 이동. 줌과 유사한 효과 |
+Node location: `MagicHour/Background` → **Depth Warp 6-DOF (MagicHour)**
 
-> **단위 기준:** depth map의 mean depth = 1.0 기준.  
-> `t_x = 0.3` → 평균 피사체 거리의 30% 만큼 이동.  
-> 절대 수치가 아니므로 시각적으로 튜닝해야 한다.
+---
+
+## Parameters
+
+### Camera Intrinsics
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `focal_length` | 1000 | Focal length in pixels. Higher = narrower FOV. |
+
+### Translation (produces parallax)
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `t_x` | ±3.0 | Lateral (left/right) shift. The primary parameter for multi-camera setups. |
+| `t_y` | ±3.0 | Vertical shift. |
+| `t_z` | ±3.0 | Forward/backward shift. Similar to a zoom effect. |
+
+> **Unit:** Relative to the mean scene depth (= 1.0). `t_x = 0.3` means the camera moved 30% of the average subject distance. Tune visually — absolute metric values are not available from monocular depth.
 
 ### Rotation
-| 파라미터 | 단위 | 설명 |
-|---------|------|------|
-| `yaw`   | 도(°) | 좌우 pan. Translation과 함께 사용. |
-| `pitch` | 도(°) | 상하 tilt |
-| `roll`  | 도(°) | 회전. 보통 0 |
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `yaw`   | ±45° | Pan left/right. Typically used together with `t_x`. |
+| `pitch` | ±45° | Tilt up/down. |
+| `roll`  | ±45° | Roll. Usually 0. |
 
-### 옵션
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `depth_invert` | True | Depth Anything V2 출력(disparity, 높을수록 가깝다) 사용 시 True |
-| `mask_dilate_px` | 20 | 홀 마스크 팽창량. FLUX Fill 경계 처리용. |
-
----
-
-## 스튜디오 3-카메라 설정 예시
-
-마스터 샷 기준으로 좌/우 카메라 배경 생성:
-
-```
-마스터 (중앙):   t_x=0.0,  yaw=0.0
-좌측 카메라:    t_x=-0.3, yaw=+8.0   (카메라가 왼쪽에 있고 오른쪽을 향함)
-우측 카메라:    t_x=+0.3, yaw=-8.0   (카메라가 오른쪽에 있고 왼쪽을 향함)
-```
+### Options
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `depth_invert` | True | Set True for Depth Anything V2 output (disparity — higher = closer). Set False if your depth map uses the opposite convention. |
+| `mask_dilate_px` | 20 | Hole mask dilation in pixels. Expand the inpainting region slightly for cleaner FLUX Fill results. |
 
 ---
 
-## 워크플로우 구성
+## Workflow
 
 ```
-[LoadImage: 마스터 배경]
-        ↓
-[Depth Anything V2]          ← controlnet-aux 안에 포함
-        ↓
-[Depth Warp 6-DOF]  ← t_x, yaw 설정
-   ↓              ↓
-[warped_image]  [hole_mask]
-        ↓              ↓
-   [VAE Encode] + [mask] → [FluxFillConditioning] → [KSampler] → [VAE Decode]
-                                    ↑
-                        [CLIPTextEncode: 배경 프롬프트]
+LoadImage (master background)
+    └→ Depth Anything V2
+            └→ Depth Warp 6-DOF  ──→ warped_image ──┐
+                                  └→ hole_mask    ──┤→ FluxFillConditioning → KSampler → VAE Decode
+                                                     └ CLIPTextEncode (background prompt)
 ```
 
 ---
 
-## 독립 실행 테스트
+## Multi-Camera Studio Example
+
+Generating left and right camera backgrounds from a master center shot:
+
+```
+Master (center):  t_x= 0.0,  yaw=  0.0
+Left camera:      t_x=-0.15, yaw= +8.0   (camera is left, pointing right)
+Right camera:     t_x=+0.15, yaw= -8.0   (camera is right, pointing left)
+```
+
+Suggested starting values for interview / talk show setups:
+
+```
+t_x            = 0.05 ~ 0.15
+yaw            = 5 ~ 15°
+focal_length   = 1200 ~ 2000
+mask_dilate_px = 20 ~ 30
+```
+
+---
+
+## Standalone Test (no ComfyUI required)
 
 ```bash
-cd comfyui-depth-warp/
-python test_warp.py --image background.jpg --t_x 0.3 --out result.jpg
-# depth 없으면 합성 depth map으로 패럴랙스 효과 확인 가능
+python test_warp.py --image background.jpg --t_x 0.1 --yaw 8 --out result.jpg
 ```
 
-출력: `[원본 | warped | hole_mask]` 3분할 이미지
+Output: side-by-side image `[original | warped | hole mask]`  
+If no depth image is provided, a synthetic depth map is used automatically.
 
 ---
 
-## 알려진 한계
+## Known Limitations
 
-1. **Monocular depth scale:** Depth Anything V2는 상대 깊이만 추정. t_x의 절대 수치는 의미 없고 시각적 튜닝 필요.
-2. **Occlusion 영역:** 가려져 있던 영역은 FLUX Fill이 채우지만 기하학적으로 정확하지 않음. 인터뷰/토크쇼처럼 카메라 이동이 작은 경우 충분한 품질.
-3. **속도:** CPU 기준 1080p 이미지 약 2~4초. GPU 가속 미구현 (배경 생성은 오프라인이므로 문제 없음).
+- **Monocular depth scale:** Depth Anything V2 outputs relative depth only. Translation values have no absolute metric meaning — tune visually per scene.
+- **Occluded regions:** Areas hidden behind objects in the source image are filled by inpainting. Results are plausible but not geometrically accurate. For small camera offsets (typical in fixed studio setups) this is generally acceptable.
+- **Performance:** ~2–4s per 1080p image on CPU. GPU acceleration not implemented — background generation is offline so this is not a bottleneck.
